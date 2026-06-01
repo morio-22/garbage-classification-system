@@ -1,0 +1,16 @@
+# Python 运行产生的缓存文件
+__pycache__/
+*.pyc
+.venv/
+work/
+outputs/
+
+# TrashNet 自动下载、解压和划分后的数据
+dataset/trashnet_raw/
+dataset/trashnet_split/
+dataset/waste_management_raw/
+dataset/four_class_split/
+
+# 训练后生成的模型和评估图片
+models/*.pth
+models/confusion_matrix.png
