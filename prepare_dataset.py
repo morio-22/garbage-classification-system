@@ -13,11 +13,13 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DATASET_DIR = PROJECT_DIR / "dataset"
 SUPPLEMENTAL_RAW_DIR = DATASET_DIR / "waste_management_raw"
 FOUR_CLASS_SPLIT_DIR = DATASET_DIR / "four_class_split"
+# 修改数据来源或映射规则时递增版本号，使旧目录自动重新生成。
+DATASET_PREPARATION_VERSION = 2
 
-# 该补充数据集使用 MIT 许可，并提供厨余、有害和其他垃圾所需类别。
+# 该补充数据集使用 MIT 许可，并提供塑料、厨余、有害和其他垃圾所需类别。
 SUPPLEMENTAL_REPO_ID = "omasteam/waste-garbage-management-dataset"
 SUPPLEMENTAL_LICENSE = "MIT"
-SUPPLEMENTAL_CLASS_NAMES = ("battery", "biological", "trash")
+SUPPLEMENTAL_CLASS_NAMES = ("battery", "biological", "plastic", "trash")
 
 # 最终模型使用以下四个中国生活垃圾类别。
 FOUR_CLASS_NAMES = (
@@ -54,7 +56,7 @@ def count_images(folder: Path) -> int:
 
 
 def supplemental_data_is_ready() -> bool:
-    """检查补充数据集需要的三个类别是否已经下载完成。"""
+    """检查补充数据集需要的四个类别是否已经下载完成。"""
 
     return all(
         count_images(SUPPLEMENTAL_RAW_DIR / class_name) > 0
@@ -63,7 +65,7 @@ def supplemental_data_is_ready() -> bool:
 
 
 def download_supplemental_dataset() -> Path:
-    """只下载补充数据集中需要的厨余、有害和其他垃圾图片。"""
+    """只下载补充数据集中需要的塑料、厨余、有害和其他垃圾图片。"""
 
     if supplemental_data_is_ready():
         print(f"已存在补充数据集，跳过下载：{SUPPLEMENTAL_RAW_DIR}")
@@ -77,9 +79,9 @@ def download_supplemental_dataset() -> Path:
         ) from error
 
     SUPPLEMENTAL_RAW_DIR.mkdir(parents=True, exist_ok=True)
-    print("正在下载厨余垃圾、有害垃圾和其他垃圾补充图片，请稍候……")
+    print("正在下载塑料、厨余垃圾、有害垃圾和其他垃圾补充图片，请稍候……")
 
-    # 只下载需要的三个目录，避免下载与当前四分类无关的图片。
+    # 只下载需要的四个目录，避免下载与当前四分类无关的图片。
     snapshot_download(
         repo_id=SUPPLEMENTAL_REPO_ID,
         repo_type="dataset",
@@ -87,6 +89,7 @@ def download_supplemental_dataset() -> Path:
         allow_patterns=[
             "battery/*",
             "biological/*",
+            "plastic/*",
             "trash/*",
             "README.md",
         ],
@@ -114,6 +117,10 @@ def collect_source_images(
         for image_path in list_images(trashnet_source_dir / material_name):
             source_images["recyclable"].append((f"trashnet_{material_name}", image_path))
 
+    # 增加补充数据集中的塑料图片，提升对真实塑料瓶等常见物品的适应能力。
+    for image_path in list_images(supplemental_source_dir / "plastic"):
+        source_images["recyclable"].append(("hf_plastic", image_path))
+
     # 补充数据集中的类别名称与最终四分类类别一一对应。
     supplemental_mapping = {
         "kitchen_waste": "biological",
@@ -125,8 +132,8 @@ def collect_source_images(
             source_images[target_name].append((f"hf_{source_name}", image_path))
 
     for class_name, images in source_images.items():
-        if len(images) < 2:
-            raise ValueError(f"类别 {class_name} 的图片不足，至少需要 2 张。")
+        if len(images) < 3:
+            raise ValueError(f"类别 {class_name} 的图片不足，至少需要 3 张。")
 
     return source_images
 
@@ -135,7 +142,7 @@ def get_split_counts(split_dir: Path) -> dict[str, dict[str, int]] | None:
     """检查四分类目录结构，并返回每个类别的图片数量。"""
 
     counts: dict[str, dict[str, int]] = {}
-    for split_name in ("train", "val"):
+    for split_name in ("train", "val", "test"):
         counts[split_name] = {}
 
         for class_name in FOUR_CLASS_NAMES:
@@ -147,6 +154,31 @@ def get_split_counts(split_dir: Path) -> dict[str, dict[str, int]] | None:
             counts[split_name][class_name] = image_count
 
     return counts
+
+
+def split_is_current(
+    split_dir: Path,
+    val_ratio: float,
+    test_ratio: float,
+    seed: int,
+) -> bool:
+    """检查已经生成的数据是否使用当前划分参数。"""
+
+    marker_path = split_dir / ".prepared.json"
+    if get_split_counts(split_dir) is None or not marker_path.exists():
+        return False
+
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    return (
+        marker.get("version") == DATASET_PREPARATION_VERSION
+        and marker.get("seed") == seed
+        and marker.get("val_ratio") == val_ratio
+        and marker.get("test_ratio") == test_ratio
+    )
 
 
 def safe_remove_generated_directory(path: Path) -> None:
@@ -166,12 +198,15 @@ def safe_remove_generated_directory(path: Path) -> None:
 def copy_split_images(
     source_images: dict[str, list[tuple[str, Path]]],
     val_ratio: float,
+    test_ratio: float,
     seed: int,
 ) -> dict[str, dict[str, int]]:
-    """按照固定随机种子，将四分类图片复制到 train 和 val 目录。"""
+    """按照固定随机种子，将图片复制到 train、val 和 test 目录。"""
 
-    if not 0 < val_ratio < 1:
-        raise ValueError("验证集比例必须在 0 和 1 之间。")
+    if not 0 < val_ratio < 1 or not 0 < test_ratio < 1:
+        raise ValueError("验证集和测试集比例必须在 0 和 1 之间。")
+    if val_ratio + test_ratio >= 1:
+        raise ValueError("验证集比例与测试集比例之和必须小于 1。")
 
     temporary_dir = DATASET_DIR / "four_class_split.tmp"
     safe_remove_generated_directory(temporary_dir)
@@ -183,14 +218,21 @@ def copy_split_images(
         shuffled_images = images.copy()
         random_generator.shuffle(shuffled_images)
 
-        # 每个类别至少保留一张训练图片和一张验证图片。
-        val_count = min(
-            len(shuffled_images) - 1,
-            max(1, round(len(shuffled_images) * val_ratio)),
-        )
+        # 三份数据互不重叠，并且每个类别至少保留一张图片。
+        val_count = max(1, round(len(shuffled_images) * val_ratio))
+        test_count = max(1, round(len(shuffled_images) * test_ratio))
+        while val_count + test_count >= len(shuffled_images):
+            if val_count >= test_count and val_count > 1:
+                val_count -= 1
+            elif test_count > 1:
+                test_count -= 1
+            else:
+                raise ValueError(f"类别 {class_name} 的图片不足，至少需要 3 张。")
+
         split_images = {
             "val": shuffled_images[:val_count],
-            "train": shuffled_images[val_count:],
+            "test": shuffled_images[val_count : val_count + test_count],
+            "train": shuffled_images[val_count + test_count :],
         }
 
         for split_name, image_items in split_images.items():
@@ -207,19 +249,21 @@ def copy_split_images(
         raise RuntimeError("自动生成四分类目录失败，请检查图片来源。")
 
     marker = {
+        "version": DATASET_PREPARATION_VERSION,
         "sources": {
             "trashnet": "https://github.com/garythung/trashnet",
             "supplemental": f"https://huggingface.co/datasets/{SUPPLEMENTAL_REPO_ID}",
         },
         "supplemental_license": SUPPLEMENTAL_LICENSE,
         "mapping": {
-            "recyclable": list(TRASHNET_RECYCLABLE_CLASS_NAMES),
+            "recyclable": [*TRASHNET_RECYCLABLE_CLASS_NAMES, "supplemental:plastic"],
             "kitchen_waste": ["biological"],
             "hazardous_waste": ["battery"],
             "other_waste": ["trash"],
         },
         "seed": seed,
         "val_ratio": val_ratio,
+        "test_ratio": test_ratio,
         "counts": counts,
     }
     (temporary_dir / ".prepared.json").write_text(
@@ -233,15 +277,17 @@ def copy_split_images(
 
 
 def prepare_four_class_dataset(
-    val_ratio: float = 0.2,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
     seed: int = 42,
     force: bool = False,
 ) -> Path:
     """下载公开图片并生成可供 ImageFolder 使用的四分类目录。"""
 
     if not force:
-        existing_counts = get_split_counts(FOUR_CLASS_SPLIT_DIR)
-        if existing_counts is not None:
+        if split_is_current(FOUR_CLASS_SPLIT_DIR, val_ratio, test_ratio, seed):
+            existing_counts = get_split_counts(FOUR_CLASS_SPLIT_DIR)
+            assert existing_counts is not None
             print(f"已存在四分类数据集，跳过准备步骤：{FOUR_CLASS_SPLIT_DIR}")
             print_split_summary(existing_counts)
             return FOUR_CLASS_SPLIT_DIR
@@ -250,8 +296,11 @@ def prepare_four_class_dataset(
     supplemental_source_dir = download_supplemental_dataset()
     source_images = collect_source_images(trashnet_source_dir, supplemental_source_dir)
 
-    print(f"正在生成垃圾四分类目录，验证集比例：{val_ratio:.0%}")
-    counts = copy_split_images(source_images, val_ratio, seed)
+    print(
+        f"正在生成垃圾四分类目录，验证集比例：{val_ratio:.0%}，"
+        f"测试集比例：{test_ratio:.0%}"
+    )
+    counts = copy_split_images(source_images, val_ratio, test_ratio, seed)
     print(f"四分类数据集准备完成：{FOUR_CLASS_SPLIT_DIR}")
     print_split_summary(counts)
     return FOUR_CLASS_SPLIT_DIR
@@ -264,23 +313,28 @@ def print_split_summary(counts: dict[str, dict[str, int]]) -> None:
     for class_name in FOUR_CLASS_NAMES:
         train_count = counts["train"][class_name]
         val_count = counts["val"][class_name]
-        print(f"  {class_name:<16} 训练集：{train_count:>4} 张，验证集：{val_count:>4} 张")
+        test_count = counts["test"][class_name]
+        print(
+            f"  {class_name:<16} 训练集：{train_count:>4} 张，"
+            f"验证集：{val_count:>4} 张，测试集：{test_count:>4} 张"
+        )
 
 
 def main() -> None:
     """允许用户单独运行四分类数据准备脚本。"""
 
     parser = argparse.ArgumentParser(description="自动准备垃圾四分类图片数据")
-    parser.add_argument("--val-ratio", type=float, default=0.2, help="验证集比例")
+    parser.add_argument("--val-ratio", type=float, default=0.1, help="验证集比例")
+    parser.add_argument("--test-ratio", type=float, default=0.1, help="测试集比例")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument(
         "--force",
         action="store_true",
-        help="重新生成四分类 train 和 val 目录",
+        help="重新生成四分类 train、val 和 test 目录",
     )
     args = parser.parse_args()
 
-    prepare_four_class_dataset(args.val_ratio, args.seed, args.force)
+    prepare_four_class_dataset(args.val_ratio, args.test_ratio, args.seed, args.force)
 
 
 if __name__ == "__main__":
