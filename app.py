@@ -126,6 +126,10 @@ def main() -> None:
             "可回收物图片来自 TrashNet；厨余垃圾、有害垃圾和其他垃圾图片"
             "来自 MIT 许可的 waste-garbage-management-dataset。"
         )
+        st.write(
+            "模型还会使用 CC BY 4.0 许可的 RealWaste 图片，"
+            "增强真实垃圾处理环境和复杂背景下的识别能力。"
+        )
         st.write(f"本次预测使用设备：{device}")
 
 
