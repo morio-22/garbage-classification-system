@@ -34,9 +34,11 @@ GARBAGE_INFO = {
 
 
 @st.cache_resource
-def load_trained_model():
-    """加载并缓存模型，避免网页每次刷新时重复读取权重。"""
+def load_trained_model(model_modified_time: float):
+    """加载并缓存模型；模型文件更新后会自动重新读取。"""
 
+    # 修改时间只用于刷新缓存，模型仍然从固定路径加载。
+    del model_modified_time
     return load_model(DEFAULT_MODEL_PATH)
 
 
@@ -87,7 +89,9 @@ def main() -> None:
 
     # 加载训练好的模型并完成真实推理。
     try:
-        model, class_names, device = load_trained_model()
+        model, class_names, device = load_trained_model(
+            DEFAULT_MODEL_PATH.stat().st_mtime
+        )
         category, confidence = predict_image(image, model, class_names, device)
     except Exception as error:
         st.error(f"模型加载或预测失败：{error}")

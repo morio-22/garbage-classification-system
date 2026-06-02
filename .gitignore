@@ -13,4 +13,6 @@ dataset/four_class_split/
 
 # 训练后生成的模型和评估图片
 models/*.pth
-models/confusion_matrix.png
+models/*.png
+models/*.csv
+models/*.json
