@@ -50,6 +50,13 @@ dataset/
 
 如果存在 `dataset/user_feedback/approved/类别名/`，其中已经人工审核通过的图片也会加入对应类别。`pending/` 和 `rejected/` 中的图片不会参与训练。
 
+反馈目录还可能包含两个特殊类别：
+
+- `not_garbage`：不是垃圾 / 不适合分类
+- `unclear_image`：图片太模糊 / 主体不清楚
+
+这两类反馈用于记录系统拒识或用户上传不合适图片的情况，默认不会进入四分类训练集。
+
 ## 数据来源
 
 - [TrashNet 官方 GitHub 仓库](https://github.com/garythung/trashnet)
@@ -65,6 +72,8 @@ dataset/
 网页提交的纠错图片会先进入 `dataset/user_feedback/pending/`。这样做是为了避免用户误判把错误标签直接加入训练集。
 
 更直观的审核方式是启动网页后，在左侧边栏选择 `反馈审核`。页面会直接显示待审核图片、模型预测、用户选择、备注和概率，并提供通过、拒绝和改类别通过操作。
+
+如果审核为 `not_garbage` 或 `unclear_image`，它们会被保存为问题样本，但不会参与下一次四分类训练。
 
 如果想使用命令行审核，可以先列出待审核图片：
 

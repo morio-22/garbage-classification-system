@@ -7,27 +7,20 @@ from pathlib import Path
 
 from feedback import (
     CATEGORY_NAMES,
+    FEEDBACK_CATEGORY_LABELS,
+    TRAINING_CATEGORY_NAMES,
     approve_feedback,
     list_pending_feedback,
     load_feedback_metadata,
     reject_feedback,
 )
 
-
-CATEGORY_LABELS = {
-    "recyclable": "可回收物",
-    "kitchen_waste": "厨余垃圾",
-    "hazardous_waste": "有害垃圾",
-    "other_waste": "其他垃圾",
-}
-
-
 def format_category(category_name: str | None) -> str:
     """把英文类别转换成更容易阅读的中文类别。"""
 
     if not category_name:
         return "未知"
-    return f"{CATEGORY_LABELS.get(category_name, category_name)}（{category_name}）"
+    return f"{FEEDBACK_CATEGORY_LABELS.get(category_name, category_name)}（{category_name}）"
 
 
 def print_pending_feedback() -> None:
@@ -73,7 +66,10 @@ def main() -> None:
     if args.approve:
         target_path = approve_feedback(args.approve, args.category)
         print(f"已审核通过：{target_path}")
-        print("重新训练前请运行：python train.py --force-prepare")
+        if target_path.parent.name in TRAINING_CATEGORY_NAMES:
+            print("重新训练前请运行：python train.py --force-prepare")
+        else:
+            print("该反馈只用于记录，不会进入四分类训练集。")
         return
 
     if args.reject:
