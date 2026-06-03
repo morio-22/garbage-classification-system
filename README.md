@@ -13,7 +13,7 @@
 
 ## 数据来源
 
-项目会自动组合两个公开数据源：
+项目会自动组合三个公开数据源：
 
 | 数据来源 | 用途 |
 | --- | --- |
@@ -31,11 +31,14 @@
 ├── prepare_trashnet.py            # 自动下载和解压 TrashNet
 ├── prepare_realwaste.py           # 自动下载和解压 UCI RealWaste
 ├── prepare_dataset.py             # 自动下载补充图片并生成四分类目录
+├── feedback.py                    # 保存和移动用户纠错反馈
+├── review_feedback.py             # 命令行审核用户纠错反馈
 ├── train.py                       # 一键准备数据并训练 ResNet18
 ├── predict.py                     # 单张图片预测脚本
 ├── requirements.txt               # Python 依赖列表
 ├── dataset/
 │   ├── README.md                  # 数据集目录和映射说明
+│   ├── user_feedback/             # 本地用户纠错反馈，不上传 GitHub
 │   └── four_class_split/          # 自动生成的四分类 train/val/test
 └── models/
     ├── garbage_resnet18.pth       # 训练后生成的最佳模型
@@ -79,19 +82,38 @@ python train.py
 1. 下载并解压 TrashNet。
 2. 从 MIT 许可补充数据集中下载塑料可回收物、厨余垃圾、有害垃圾和其他垃圾图片。
 3. 从 UCI 下载并解压 CC BY 4.0 许可的 RealWaste 真实环境图片。
-4. 合并图片并生成四分类目录。
-5. 按照固定随机种子划分训练集、验证集和测试集，默认为 80%、10% 和 10%。
-6. 使用 `ImageFolder` 读取数据。
-7. 加载 ImageNet 预训练 ResNet18，将最后一层修改为四分类层。
-8. 使用温和的类别权重减轻图片数量不均衡带来的影响。
-9. 根据验证损失自动降低学习率，并在长时间没有改善时提前停止训练。
-10. 将验证集表现最佳的模型保存为 `models/garbage_resnet18.pth`。
-11. 在独立测试集上输出准确率、精确率、召回率、F1 分数和混淆矩阵。
-12. 保存训练曲线、每轮训练记录和测试集指标。
+4. 读取已经人工审核通过的用户纠错反馈。
+5. 合并图片并生成四分类目录。
+6. 按照固定随机种子划分训练集、验证集和测试集，默认为 80%、10% 和 10%。
+7. 使用 `ImageFolder` 读取数据。
+8. 加载 ImageNet 预训练 ResNet18，将最后一层修改为四分类层。
+9. 使用温和的类别权重减轻图片数量不均衡带来的影响。
+10. 根据验证损失自动降低学习率，并在长时间没有改善时提前停止训练。
+11. 将验证集表现最佳的模型保存为 `models/garbage_resnet18.pth`。
+12. 在独立测试集上输出准确率、精确率、召回率、F1 分数和混淆矩阵。
+13. 保存训练曲线、每轮训练记录和测试集指标。
 
 第一次运行还会自动下载 ResNet18 预训练权重。RealWaste 压缩包约为 657 MB，因此首次运行需要联网并等待下载。
 
 自动生成的测试集不会参与训练或模型选择，可以更客观地评价模型。但这些图片仍然来自公开数据集。准备课程展示时，建议再用手机拍摄一批新图片，单独测试真实场景效果。
+
+## 直接下载训练好的模型
+
+如果只想运行网页，不想重新训练，可以从 GitHub Release 下载已经训练好的模型：
+
+[garbage_resnet18.pth](https://github.com/morio-22/garbage-classification-system/releases/tag/garbage-resnet18-realwaste-v1)
+
+下载后放到项目的 `models/` 目录中，最终路径应为：
+
+```text
+models/garbage_resnet18.pth
+```
+
+然后直接启动网页：
+
+```powershell
+python -m streamlit run app.py
+```
 
 ## 常用训练参数
 
@@ -132,3 +154,40 @@ http://localhost:8501
 ```
 
 网页支持一次上传一张或多张图片。每张图片都会显示原始图片、预测类别、置信度、四类概率、投放建议和处理后的图片。最高置信度低于 `60%` 时，网页会提示人工确认。
+
+网页左侧边栏可以切换两个页面：
+
+- `图片识别`：普通用户上传图片并查看预测结果。
+- `反馈审核`：管理员直观看到待审核图片，并点击通过、拒绝或改类别通过。
+
+## 预测错误反馈
+
+网页中每张图片下方都有“识别错了？提交纠错反馈”。用户选择正确类别并确认后，图片会先保存到：
+
+```text
+dataset/user_feedback/pending/
+```
+
+这些图片不会直接参与训练，避免用户误判导致模型学习错误标签。审核流程如下：
+
+```powershell
+python review_feedback.py --list
+python review_feedback.py --approve "dataset/user_feedback/pending/recyclable/某张图片.jpg"
+python review_feedback.py --reject "dataset/user_feedback/pending/recyclable/某张图片.jpg"
+```
+
+如果用户选错了类别，但图片本身有价值，可以在审核通过时重新指定类别：
+
+```powershell
+python review_feedback.py --approve "dataset/user_feedback/pending/other_waste/某张图片.jpg" --category recyclable
+```
+
+审核通过的图片会移动到 `dataset/user_feedback/approved/`，下一次重新准备数据并训练时才会被使用：
+
+```powershell
+python train.py --force-prepare
+```
+
+也可以直接在网页中审核：启动 Streamlit 后，在左侧边栏选择 `反馈审核`。页面会显示待审核图片、模型预测、用户选择、置信度、备注和四类概率。
+
+本地开发时可以不设置管理员密码。如果项目公开部署，建议设置环境变量 `ADMIN_PASSWORD` 或 Streamlit secrets 中的 `ADMIN_PASSWORD`，这样只有输入正确密码的人才能进入审核页面。

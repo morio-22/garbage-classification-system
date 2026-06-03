@@ -18,8 +18,9 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DATASET_DIR = PROJECT_DIR / "dataset"
 SUPPLEMENTAL_RAW_DIR = DATASET_DIR / "waste_management_raw"
 FOUR_CLASS_SPLIT_DIR = DATASET_DIR / "four_class_split"
+APPROVED_FEEDBACK_DIR = DATASET_DIR / "user_feedback" / "approved"
 # 修改数据来源或映射规则时递增版本号，使旧目录自动重新生成。
-DATASET_PREPARATION_VERSION = 3
+DATASET_PREPARATION_VERSION = 4
 
 # 该补充数据集使用 MIT 许可，并提供塑料、厨余、有害和其他垃圾所需类别。
 SUPPLEMENTAL_REPO_ID = "omasteam/waste-garbage-management-dataset"
@@ -151,6 +152,11 @@ def collect_source_images(
             for image_path in list_images(realwaste_source_dir / source_name):
                 source_images[target_name].append((f"realwaste_{source_prefix}", image_path))
 
+    # 用户纠错只读取 approved 目录。pending 待审核图片不会进入训练，避免错误反馈污染模型。
+    for class_name in FOUR_CLASS_NAMES:
+        for image_path in list_images(APPROVED_FEEDBACK_DIR / class_name):
+            source_images[class_name].append(("feedback_approved", image_path))
+
     for class_name, images in source_images.items():
         if len(images) < 3:
             raise ValueError(f"类别 {class_name} 的图片不足，至少需要 3 张。")
@@ -274,6 +280,7 @@ def copy_split_images(
             "trashnet": "https://github.com/garythung/trashnet",
             "supplemental": f"https://huggingface.co/datasets/{SUPPLEMENTAL_REPO_ID}",
             "realwaste": REALWASTE_DATASET_PAGE,
+            "approved_user_feedback": str(APPROVED_FEEDBACK_DIR),
         },
         "supplemental_license": SUPPLEMENTAL_LICENSE,
         "realwaste_license": REALWASTE_LICENSE,
@@ -282,15 +289,18 @@ def copy_split_images(
                 *TRASHNET_RECYCLABLE_CLASS_NAMES,
                 "supplemental:plastic",
                 *[f"realwaste:{name}" for name in REALWASTE_MAPPING["recyclable"]],
+                "approved_feedback:recyclable",
             ],
             "kitchen_waste": [
                 "biological",
                 *[f"realwaste:{name}" for name in REALWASTE_MAPPING["kitchen_waste"]],
+                "approved_feedback:kitchen_waste",
             ],
-            "hazardous_waste": ["battery"],
+            "hazardous_waste": ["battery", "approved_feedback:hazardous_waste"],
             "other_waste": [
                 "trash",
                 *[f"realwaste:{name}" for name in REALWASTE_MAPPING["other_waste"]],
+                "approved_feedback:other_waste",
             ],
         },
         "seed": seed,
