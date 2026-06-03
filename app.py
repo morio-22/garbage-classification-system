@@ -1,10 +1,19 @@
 """垃圾分类智能识别系统：Streamlit 网页应用。"""
 
+import os
 from io import BytesIO
 
 import streamlit as st
 from PIL import Image, ImageOps
 
+from feedback import (
+    PENDING_FEEDBACK_DIR,
+    approve_feedback,
+    list_pending_feedback,
+    load_feedback_metadata,
+    reject_feedback,
+    save_pending_feedback,
+)
 from predict import DEFAULT_MODEL_PATH, load_model, predict_probabilities
 
 
@@ -32,6 +41,14 @@ GARBAGE_INFO = {
     },
 }
 LOW_CONFIDENCE_THRESHOLD = 0.6
+CATEGORY_LABEL_OPTIONS = {
+    category_info["label"]: category_name
+    for category_name, category_info in GARBAGE_INFO.items()
+}
+CATEGORY_NAME_TO_LABEL = {
+    category_name: category_info["label"]
+    for category_name, category_info in GARBAGE_INFO.items()
+}
 
 
 @st.cache_resource
@@ -64,9 +81,241 @@ def show_probability_bars(probabilities: dict[str, float]) -> None:
         st.progress(probability)
 
 
+def show_feedback_form(
+    image: Image.Image,
+    file_name: str,
+    predicted_category: str,
+    confidence: float,
+    probabilities: dict[str, float],
+    form_key: str,
+) -> None:
+    """显示纠错反馈表单，并把反馈保存到待审核目录。"""
+
+    with st.expander("识别错了？提交纠错反馈"):
+        st.write(
+            "反馈会先保存到待审核目录，不会直接进入训练集。"
+            "人工审核通过后，下一次训练才会使用这些图片。"
+        )
+
+        option_labels = list(CATEGORY_LABEL_OPTIONS.keys())
+        predicted_label = GARBAGE_INFO[predicted_category]["label"]
+        default_index = option_labels.index(predicted_label)
+
+        with st.form(f"{form_key}_feedback_form"):
+            selected_label = st.selectbox(
+                "请选择你认为正确的类别",
+                option_labels,
+                index=default_index,
+                key=f"{form_key}_corrected_category",
+            )
+            note = st.text_input(
+                "备注（可选）",
+                placeholder="例如：这是透明塑料瓶，不是其他垃圾",
+                key=f"{form_key}_feedback_note",
+            )
+            confirmed = st.checkbox(
+                "我确认这张图片真实属于所选类别",
+                key=f"{form_key}_feedback_confirmed",
+            )
+            submitted = st.form_submit_button("提交纠错反馈")
+
+        if not submitted:
+            return
+
+        corrected_category = CATEGORY_LABEL_OPTIONS[selected_label]
+        if not confirmed:
+            st.warning("请先勾选确认框，避免误操作把错误标签提交给系统。")
+            return
+
+        if corrected_category == predicted_category:
+            st.info("你选择的类别与模型预测一致，因此没有保存为纠错样本。")
+            return
+
+        try:
+            feedback_path = save_pending_feedback(
+                image=image,
+                original_file_name=file_name,
+                predicted_category=predicted_category,
+                confidence=confidence,
+                probabilities=probabilities,
+                corrected_category=corrected_category,
+                note=note,
+            )
+        except Exception as error:
+            st.error(f"反馈保存失败：{error}")
+            return
+
+        st.success(
+            "反馈已保存到待审核区，审核通过后才会用于重新训练。"
+            f"保存位置：{feedback_path.relative_to(PENDING_FEEDBACK_DIR.parent)}"
+        )
+
+
+def format_category(category_name: str | None) -> str:
+    """把英文类别转换成中文类别，页面上更容易看懂。"""
+
+    if not category_name:
+        return "未知"
+    label = CATEGORY_NAME_TO_LABEL.get(category_name, category_name)
+    return f"{label}（{category_name}）"
+
+
+def show_review_probability_bars(probabilities: dict[str, float]) -> None:
+    """在审核页面中显示模型保存下来的四类概率。"""
+
+    if not probabilities:
+        st.info("这条反馈没有保存概率信息。")
+        return
+
+    st.markdown("**提交时模型概率**")
+    for category, probability in sorted(
+        probabilities.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+        label = CATEGORY_NAME_TO_LABEL.get(category, category)
+        st.write(f"{label}：{probability:.2%}")
+        st.progress(float(probability))
+
+
+def get_admin_password() -> str:
+    """读取管理员密码；优先使用环境变量，其次使用 Streamlit secrets。"""
+
+    password_from_environment = os.environ.get("ADMIN_PASSWORD", "")
+    if password_from_environment:
+        return password_from_environment
+
+    try:
+        return st.secrets.get("ADMIN_PASSWORD", "")
+    except Exception:
+        return ""
+
+
+def check_admin_access() -> bool:
+    """检查是否允许访问审核页面。"""
+
+    admin_password = get_admin_password()
+    if not admin_password:
+        st.warning(
+            "当前没有配置管理员密码，适合本地开发使用。"
+            "如果公开部署，建议设置 ADMIN_PASSWORD。"
+        )
+        return True
+
+    entered_password = st.text_input("请输入管理员密码", type="password")
+    if entered_password != admin_password:
+        st.info("输入正确的管理员密码后，才能查看和处理待审核图片。")
+        return False
+
+    return True
+
+
+def show_feedback_review_page() -> None:
+    """显示管理员反馈审核页面。"""
+
+    st.title("待审核反馈图片")
+    st.caption(
+        "这里显示用户提交的纠错反馈。只有审核通过的图片，才会进入下一次训练。"
+    )
+    if not check_admin_access():
+        return
+
+    pending_images = list_pending_feedback()
+    if not pending_images:
+        st.success("当前没有待审核反馈。")
+        return
+
+    st.info(f"当前共有 {len(pending_images)} 张待审核图片。")
+    st.warning(
+        "审核建议：图片清楚、类别确定才点通过；看不清或类别不确定就拒绝。"
+    )
+
+    option_labels = list(CATEGORY_LABEL_OPTIONS.keys())
+    for image_index, image_path in enumerate(pending_images, start=1):
+        metadata = load_feedback_metadata(image_path)
+        predicted_category = metadata.get("predicted_category")
+        corrected_category = metadata.get("corrected_category", image_path.parent.name)
+        confidence = metadata.get("confidence")
+        probabilities = metadata.get("probabilities", {})
+        note = metadata.get("note") or "无"
+        original_file_name = metadata.get("original_file_name", image_path.name)
+        default_label = CATEGORY_NAME_TO_LABEL.get(
+            corrected_category,
+            GARBAGE_INFO["other_waste"]["label"],
+        )
+        default_index = (
+            option_labels.index(default_label)
+            if default_label in option_labels
+            else 0
+        )
+
+        with st.container(border=True):
+            st.subheader(f"{image_index}. {original_file_name}")
+            image_column, detail_column = st.columns([1, 1])
+
+            with image_column:
+                try:
+                    st.image(
+                        Image.open(image_path),
+                        caption=f"待审核图片：{image_path.name}",
+                        width="stretch",
+                    )
+                except Exception as error:
+                    st.error(f"图片打开失败：{error}")
+                    continue
+
+            with detail_column:
+                st.write(f"**模型预测：** {format_category(predicted_category)}")
+                st.write(f"**用户选择：** {format_category(corrected_category)}")
+                if confidence is None:
+                    st.write("**模型置信度：** 未知")
+                else:
+                    st.write(f"**模型置信度：** {float(confidence):.2%}")
+                st.write(f"**用户备注：** {note}")
+                st.caption(f"文件位置：{image_path}")
+                show_review_probability_bars(probabilities)
+
+                final_label = st.selectbox(
+                    "审核后的正确类别",
+                    option_labels,
+                    index=default_index,
+                    key=f"review_category_{image_path.stem}",
+                )
+                final_category = CATEGORY_LABEL_OPTIONS[final_label]
+
+                approve_column, reject_column = st.columns(2)
+                with approve_column:
+                    if st.button(
+                        "通过",
+                        key=f"approve_{image_path.stem}",
+                        type="primary",
+                    ):
+                        try:
+                            target_path = approve_feedback(image_path, final_category)
+                        except Exception as error:
+                            st.error(f"审核通过失败：{error}")
+                        else:
+                            st.success(f"已通过并移动到：{target_path}")
+                            st.rerun()
+
+                with reject_column:
+                    if st.button("拒绝", key=f"reject_{image_path.stem}"):
+                        try:
+                            target_path = reject_feedback(image_path)
+                        except Exception as error:
+                            st.error(f"拒绝失败：{error}")
+                        else:
+                            st.success(f"已拒绝并移动到：{target_path}")
+                            st.rerun()
+
+    st.divider()
+    st.info("审核完成后，重新训练请运行：python train.py --force-prepare")
+
+
 def show_prediction_result(
     image: Image.Image,
     file_name: str,
+    file_index: int,
     model,
     class_names: list[str],
     device,
@@ -102,12 +351,18 @@ def show_prediction_result(
 
         st.success(f"投放建议：{category_info['advice']}")
         show_probability_bars(probabilities)
+        show_feedback_form(
+            image=image,
+            file_name=file_name,
+            predicted_category=category,
+            confidence=confidence,
+            probabilities=probabilities,
+            form_key=f"image_{file_index}",
+        )
 
 
-def main() -> None:
-    """创建网页界面并处理用户上传的图片。"""
-
-    st.set_page_config(page_title="垃圾分类智能识别系统", page_icon="♻️", layout="wide")
+def show_prediction_page() -> None:
+    """显示普通用户使用的图片识别页面。"""
 
     st.title("垃圾分类智能识别系统")
     st.caption("使用公开垃圾图片数据和预训练 ResNet18 构建的生活垃圾四分类识别系统。")
@@ -151,6 +406,7 @@ def main() -> None:
             show_prediction_result(
                 image,
                 uploaded_file.name,
+                file_index,
                 model,
                 class_names,
                 device,
@@ -171,7 +427,28 @@ def main() -> None:
             "模型还会使用 CC BY 4.0 许可的 RealWaste 图片，"
             "增强真实垃圾处理环境和复杂背景下的识别能力。"
         )
+        st.write(
+            "网页中的纠错反馈会先进入待审核目录；只有运行 review_feedback.py "
+            "审核通过的图片，才会加入下一次训练。"
+        )
         st.write(f"本次预测使用设备：{device}")
+
+
+def main() -> None:
+    """创建网页界面，并根据侧边栏选择显示不同页面。"""
+
+    st.set_page_config(page_title="垃圾分类智能识别系统", page_icon="♻️", layout="wide")
+
+    page_name = st.sidebar.radio(
+        "页面",
+        ["图片识别", "反馈审核"],
+        help="普通用户使用图片识别；管理员使用反馈审核。",
+    )
+
+    if page_name == "反馈审核":
+        show_feedback_review_page()
+    else:
+        show_prediction_page()
 
 
 if __name__ == "__main__":

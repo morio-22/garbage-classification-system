@@ -11,6 +11,7 @@ dataset/trashnet_split/
 dataset/waste_management_raw/
 dataset/realwaste_raw/
 dataset/four_class_split/
+dataset/user_feedback/
 
 # 训练后生成的模型和评估图片
 models/*.pth
