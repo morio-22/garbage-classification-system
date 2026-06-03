@@ -6,6 +6,11 @@ import random
 import shutil
 from pathlib import Path
 
+from prepare_realwaste import (
+    REALWASTE_DATASET_PAGE,
+    REALWASTE_LICENSE,
+    prepare_realwaste_source,
+)
 from prepare_trashnet import IMAGE_SUFFIXES, prepare_trashnet_source
 
 
@@ -14,7 +19,7 @@ DATASET_DIR = PROJECT_DIR / "dataset"
 SUPPLEMENTAL_RAW_DIR = DATASET_DIR / "waste_management_raw"
 FOUR_CLASS_SPLIT_DIR = DATASET_DIR / "four_class_split"
 # 修改数据来源或映射规则时递增版本号，使旧目录自动重新生成。
-DATASET_PREPARATION_VERSION = 2
+DATASET_PREPARATION_VERSION = 3
 
 # 该补充数据集使用 MIT 许可，并提供塑料、厨余、有害和其他垃圾所需类别。
 SUPPLEMENTAL_REPO_ID = "omasteam/waste-garbage-management-dataset"
@@ -37,6 +42,13 @@ TRASHNET_RECYCLABLE_CLASS_NAMES = (
     "paper",
     "plastic",
 )
+
+# RealWaste 来自真实垃圾处理环境，可以补充复杂背景图片。
+REALWASTE_MAPPING = {
+    "recyclable": ("Cardboard", "Glass", "Metal", "Paper", "Plastic"),
+    "kitchen_waste": ("Food Organics", "Vegetation"),
+    "other_waste": ("Miscellaneous Trash", "Textile Trash"),
+}
 
 
 def list_images(folder: Path) -> list[Path]:
@@ -105,6 +117,7 @@ def download_supplemental_dataset() -> Path:
 def collect_source_images(
     trashnet_source_dir: Path,
     supplemental_source_dir: Path,
+    realwaste_source_dir: Path,
 ) -> dict[str, list[tuple[str, Path]]]:
     """收集四个最终类别的图片来源，并给每张图片添加来源前缀。"""
 
@@ -130,6 +143,13 @@ def collect_source_images(
     for target_name, source_name in supplemental_mapping.items():
         for image_path in list_images(supplemental_source_dir / source_name):
             source_images[target_name].append((f"hf_{source_name}", image_path))
+
+    # RealWaste 图片来自真实垃圾处理环境，用于增强复杂背景下的识别能力。
+    for target_name, source_names in REALWASTE_MAPPING.items():
+        for source_name in source_names:
+            source_prefix = source_name.lower().replace(" ", "_")
+            for image_path in list_images(realwaste_source_dir / source_name):
+                source_images[target_name].append((f"realwaste_{source_prefix}", image_path))
 
     for class_name, images in source_images.items():
         if len(images) < 3:
@@ -253,13 +273,25 @@ def copy_split_images(
         "sources": {
             "trashnet": "https://github.com/garythung/trashnet",
             "supplemental": f"https://huggingface.co/datasets/{SUPPLEMENTAL_REPO_ID}",
+            "realwaste": REALWASTE_DATASET_PAGE,
         },
         "supplemental_license": SUPPLEMENTAL_LICENSE,
+        "realwaste_license": REALWASTE_LICENSE,
         "mapping": {
-            "recyclable": [*TRASHNET_RECYCLABLE_CLASS_NAMES, "supplemental:plastic"],
-            "kitchen_waste": ["biological"],
+            "recyclable": [
+                *TRASHNET_RECYCLABLE_CLASS_NAMES,
+                "supplemental:plastic",
+                *[f"realwaste:{name}" for name in REALWASTE_MAPPING["recyclable"]],
+            ],
+            "kitchen_waste": [
+                "biological",
+                *[f"realwaste:{name}" for name in REALWASTE_MAPPING["kitchen_waste"]],
+            ],
             "hazardous_waste": ["battery"],
-            "other_waste": ["trash"],
+            "other_waste": [
+                "trash",
+                *[f"realwaste:{name}" for name in REALWASTE_MAPPING["other_waste"]],
+            ],
         },
         "seed": seed,
         "val_ratio": val_ratio,
@@ -294,7 +326,12 @@ def prepare_four_class_dataset(
 
     trashnet_source_dir = prepare_trashnet_source()
     supplemental_source_dir = download_supplemental_dataset()
-    source_images = collect_source_images(trashnet_source_dir, supplemental_source_dir)
+    realwaste_source_dir = prepare_realwaste_source()
+    source_images = collect_source_images(
+        trashnet_source_dir,
+        supplemental_source_dir,
+        realwaste_source_dir,
+    )
 
     print(
         f"正在生成垃圾四分类目录，验证集比例：{val_ratio:.0%}，"

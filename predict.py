@@ -81,6 +81,19 @@ def predict_image(
 ) -> tuple[str, float]:
     """预测 PIL 图片，返回垃圾四分类类别和置信度。"""
 
+    probabilities = predict_probabilities(image, model, class_names, device)
+    category = max(probabilities, key=probabilities.get)
+    return category, probabilities[category]
+
+
+def predict_probabilities(
+    image: Image.Image,
+    model: nn.Module,
+    class_names: list[str],
+    device: torch.device,
+) -> dict[str, float]:
+    """预测 PIL 图片，返回四个垃圾类别各自的概率。"""
+
     # 使用官方 ResNet18 预训练权重配套的图片预处理步骤。
     # 其中包含缩放、裁剪、转张量和标准化。
     preprocess = ResNet18_Weights.DEFAULT.transforms()
@@ -89,11 +102,12 @@ def predict_image(
     # 推理阶段不需要计算梯度，可以减少内存占用并提升速度。
     with torch.no_grad():
         logits = model(image_tensor)
-        probabilities = torch.softmax(logits, dim=1)
-        confidence, predicted_index = torch.max(probabilities, dim=1)
+        probability_tensor = torch.softmax(logits, dim=1).squeeze(0)
 
-    category = class_names[predicted_index.item()]
-    return category, confidence.item()
+    return {
+        class_name: probability_tensor[index].item()
+        for index, class_name in enumerate(class_names)
+    }
 
 
 def predict_file(

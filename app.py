@@ -5,7 +5,7 @@ from io import BytesIO
 import streamlit as st
 from PIL import Image, ImageOps
 
-from predict import DEFAULT_MODEL_PATH, load_model, predict_image
+from predict import DEFAULT_MODEL_PATH, load_model, predict_probabilities
 
 
 # 四类垃圾的中文名称、投放建议和处理后图片边框颜色。
@@ -31,6 +31,7 @@ GARBAGE_INFO = {
         "color": "#7F8C8D",
     },
 }
+LOW_CONFIDENCE_THRESHOLD = 0.6
 
 
 @st.cache_resource
@@ -49,6 +50,60 @@ def create_processed_image(image: Image.Image, category: str) -> Image.Image:
     return ImageOps.expand(image, border=12, fill=border_color)
 
 
+def show_probability_bars(probabilities: dict[str, float]) -> None:
+    """按照概率从高到低显示四类垃圾的预测结果。"""
+
+    st.markdown("**四类概率**")
+    for category, probability in sorted(
+        probabilities.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+        label = GARBAGE_INFO[category]["label"]
+        st.write(f"{label}：{probability:.2%}")
+        st.progress(probability)
+
+
+def show_prediction_result(
+    image: Image.Image,
+    file_name: str,
+    model,
+    class_names: list[str],
+    device,
+) -> None:
+    """显示一张图片的原图、预测结果、概率和处理后图片。"""
+
+    probabilities = predict_probabilities(image, model, class_names, device)
+    category = max(probabilities, key=probabilities.get)
+    confidence = probabilities[category]
+    category_info = GARBAGE_INFO[category]
+    processed_image = create_processed_image(image, category)
+
+    st.subheader(f"图片：{file_name}")
+    image_column, result_column = st.columns([1, 1])
+
+    with image_column:
+        st.image(image, caption="用户上传的原始图片", width="stretch")
+        st.image(
+            processed_image,
+            caption=f"处理后图片：{category_info['label']}",
+            width="stretch",
+        )
+
+    with result_column:
+        category_column, confidence_column = st.columns(2)
+        with category_column:
+            st.metric("预测类别", category_info["label"])
+        with confidence_column:
+            st.metric("模型置信度", f"{confidence:.2%}")
+
+        if confidence < LOW_CONFIDENCE_THRESHOLD:
+            st.warning("模型置信度较低，建议人工确认后再投放。")
+
+        st.success(f"投放建议：{category_info['advice']}")
+        show_probability_bars(probabilities)
+
+
 def main() -> None:
     """创建网页界面并处理用户上传的图片。"""
 
@@ -65,57 +120,43 @@ def main() -> None:
         st.info("脚本会自动准备四分类图片、训练模型并输出混淆矩阵。")
         return
 
-    uploaded_file = st.file_uploader(
-        "请上传一张垃圾图片",
+    uploaded_files = st.file_uploader(
+        "请上传一张或多张垃圾图片",
         type=["jpg", "jpeg", "png"],
-        help="支持 JPG、JPEG 和 PNG 格式。",
+        accept_multiple_files=True,
+        help="支持 JPG、JPEG 和 PNG 格式，可以一次选择多张图片。",
     )
 
-    if uploaded_file is None:
-        st.info("请先上传图片，系统会在这里显示真实模型的识别结果。")
+    if not uploaded_files:
+        st.info("请先上传图片，系统会逐张显示真实模型的识别结果。")
         return
 
-    image_bytes = uploaded_file.getvalue()
-
-    # 尝试读取图片。如果文件损坏，则提示用户重新上传。
-    try:
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
-    except Exception:
-        st.error("图片读取失败，请重新上传一张有效的 JPG 或 PNG 图片。")
-        return
-
-    st.subheader("1. 原始图片")
-    st.image(image, caption="用户上传的图片", width="stretch")
-
-    # 加载训练好的模型并完成真实推理。
+    # 模型只需要加载一次，然后复用于本次上传的所有图片。
     try:
         model, class_names, device = load_trained_model(
             DEFAULT_MODEL_PATH.stat().st_mtime
         )
-        category, confidence = predict_image(image, model, class_names, device)
     except Exception as error:
-        st.error(f"模型加载或预测失败：{error}")
+        st.error(f"模型加载失败：{error}")
         return
 
-    category_info = GARBAGE_INFO[category]
-    processed_image = create_processed_image(image, category)
+    st.write(f"本次共上传 {len(uploaded_files)} 张图片。")
+    for file_index, uploaded_file in enumerate(uploaded_files):
+        if file_index > 0:
+            st.divider()
 
-    st.subheader("2. 识别结果")
-    category_column, confidence_column = st.columns(2)
-    with category_column:
-        st.metric("预测类别", category_info["label"])
-        st.caption(f"模型内部类别名称：{category}")
-    with confidence_column:
-        st.metric("模型置信度", f"{confidence:.2%}")
-
-    st.success(f"投放建议：{category_info['advice']}")
-
-    st.subheader("3. 处理后的图片")
-    st.image(
-        processed_image,
-        caption=f"识别结果：{category_info['label']}（彩色边框表示系统已经完成处理）",
-        width="stretch",
-    )
+        # 尝试读取图片。如果文件损坏，则提示用户并继续处理其他图片。
+        try:
+            image = Image.open(BytesIO(uploaded_file.getvalue())).convert("RGB")
+            show_prediction_result(
+                image,
+                uploaded_file.name,
+                model,
+                class_names,
+                device,
+            )
+        except Exception as error:
+            st.error(f"{uploaded_file.name} 处理失败：{error}")
 
     with st.expander("关于当前模型"):
         st.write(
@@ -125,6 +166,10 @@ def main() -> None:
         st.write(
             "可回收物图片来自 TrashNet；厨余垃圾、有害垃圾和其他垃圾图片"
             "来自 MIT 许可的 waste-garbage-management-dataset。"
+        )
+        st.write(
+            "模型还会使用 CC BY 4.0 许可的 RealWaste 图片，"
+            "增强真实垃圾处理环境和复杂背景下的识别能力。"
         )
         st.write(f"本次预测使用设备：{device}")
 

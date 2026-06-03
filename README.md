@@ -19,8 +19,9 @@
 | --- | --- |
 | [TrashNet 官方仓库](https://github.com/garythung/trashnet) | 纸板、玻璃、金属、纸张和塑料，统一映射为可回收物 |
 | [waste-garbage-management-dataset](https://huggingface.co/datasets/omasteam/waste-garbage-management-dataset) | 下载 `plastic`、`biological`、`battery` 和 `trash`，用于补充塑料可回收物、厨余垃圾、有害垃圾和其他垃圾 |
+| [RealWaste](https://archive.ics.uci.edu/dataset/908/realwaste) | 下载真实垃圾处理环境图片，用于增强复杂背景下的可回收物、厨余垃圾和其他垃圾识别 |
 
-补充数据集使用 MIT 许可。详细映射见 [dataset/README.md](dataset/README.md)。
+补充数据集使用 MIT 许可，RealWaste 使用 CC BY 4.0 许可。详细映射见 [dataset/README.md](dataset/README.md)。
 
 ## 项目结构
 
@@ -28,6 +29,7 @@
 .
 ├── app.py                         # Streamlit 网页应用
 ├── prepare_trashnet.py            # 自动下载和解压 TrashNet
+├── prepare_realwaste.py           # 自动下载和解压 UCI RealWaste
 ├── prepare_dataset.py             # 自动下载补充图片并生成四分类目录
 ├── train.py                       # 一键准备数据并训练 ResNet18
 ├── predict.py                     # 单张图片预测脚本
@@ -76,17 +78,18 @@ python train.py
 
 1. 下载并解压 TrashNet。
 2. 从 MIT 许可补充数据集中下载塑料可回收物、厨余垃圾、有害垃圾和其他垃圾图片。
-3. 合并图片并生成四分类目录。
-4. 按照固定随机种子划分训练集、验证集和测试集，默认为 80%、10% 和 10%。
-5. 使用 `ImageFolder` 读取数据。
-6. 加载 ImageNet 预训练 ResNet18，将最后一层修改为四分类层。
-7. 使用温和的类别权重减轻图片数量不均衡带来的影响。
-8. 根据验证损失自动降低学习率，并在长时间没有改善时提前停止训练。
-9. 将验证集表现最佳的模型保存为 `models/garbage_resnet18.pth`。
-10. 在独立测试集上输出准确率、精确率、召回率、F1 分数和混淆矩阵。
-11. 保存训练曲线、每轮训练记录和测试集指标。
+3. 从 UCI 下载并解压 CC BY 4.0 许可的 RealWaste 真实环境图片。
+4. 合并图片并生成四分类目录。
+5. 按照固定随机种子划分训练集、验证集和测试集，默认为 80%、10% 和 10%。
+6. 使用 `ImageFolder` 读取数据。
+7. 加载 ImageNet 预训练 ResNet18，将最后一层修改为四分类层。
+8. 使用温和的类别权重减轻图片数量不均衡带来的影响。
+9. 根据验证损失自动降低学习率，并在长时间没有改善时提前停止训练。
+10. 将验证集表现最佳的模型保存为 `models/garbage_resnet18.pth`。
+11. 在独立测试集上输出准确率、精确率、召回率、F1 分数和混淆矩阵。
+12. 保存训练曲线、每轮训练记录和测试集指标。
 
-第一次运行还会自动下载 ResNet18 预训练权重，因此需要联网。
+第一次运行还会自动下载 ResNet18 预训练权重。RealWaste 压缩包约为 657 MB，因此首次运行需要联网并等待下载。
 
 自动生成的测试集不会参与训练或模型选择，可以更客观地评价模型。但这些图片仍然来自公开数据集。准备课程展示时，建议再用手机拍摄一批新图片，单独测试真实场景效果。
 
@@ -128,4 +131,4 @@ python -m streamlit run app.py
 http://localhost:8501
 ```
 
-网页会显示原始图片、预测类别、置信度、投放建议和处理后的图片。
+网页支持一次上传一张或多张图片。每张图片都会显示原始图片、预测类别、置信度、四类概率、投放建议和处理后的图片。最高置信度低于 `60%` 时，网页会提示人工确认。

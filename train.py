@@ -251,7 +251,7 @@ def save_checkpoint(
     model_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "architecture": "resnet18",
-        "dataset": "TrashNet + waste-garbage-management-dataset",
+        "dataset": "TrashNet + waste-garbage-management-dataset + RealWaste",
         "class_names": class_names,
         "model_state_dict": model.state_dict(),
         "val_accuracy": val_accuracy,
