@@ -6,15 +6,33 @@ from io import BytesIO
 import streamlit as st
 from PIL import Image, ImageOps
 
-from feedback import (
-    PENDING_FEEDBACK_DIR,
-    approve_feedback,
-    list_pending_feedback,
-    load_feedback_metadata,
-    reject_feedback,
-    save_pending_feedback,
-)
+import feedback as feedback_module
 from predict import DEFAULT_MODEL_PATH, load_model, predict_probabilities
+
+
+FALLBACK_FEEDBACK_CATEGORY_LABELS = {
+    "recyclable": "可回收物",
+    "kitchen_waste": "厨余垃圾",
+    "hazardous_waste": "有害垃圾",
+    "other_waste": "其他垃圾",
+    "not_garbage": "不是垃圾 / 不适合分类",
+    "unclear_image": "图片太模糊 / 主体不清楚",
+}
+FEEDBACK_CATEGORY_LABELS = getattr(
+    feedback_module,
+    "FEEDBACK_CATEGORY_LABELS",
+    FALLBACK_FEEDBACK_CATEGORY_LABELS,
+)
+
+# 兼容旧版 feedback.py：如果 Streamlit 进程仍然加载到旧模块，
+# 这里补齐特殊反馈类别，避免页面保存“不是垃圾”时报未知类别。
+feedback_module.CATEGORY_NAMES = tuple(FEEDBACK_CATEGORY_LABELS.keys())
+PENDING_FEEDBACK_DIR = feedback_module.PENDING_FEEDBACK_DIR
+approve_feedback = feedback_module.approve_feedback
+list_pending_feedback = feedback_module.list_pending_feedback
+load_feedback_metadata = feedback_module.load_feedback_metadata
+reject_feedback = feedback_module.reject_feedback
+save_pending_feedback = feedback_module.save_pending_feedback
 
 
 # 四类垃圾的中文名称、投放建议和处理后图片边框颜色。
@@ -41,14 +59,21 @@ GARBAGE_INFO = {
     },
 }
 LOW_CONFIDENCE_THRESHOLD = 0.6
+AMBIGUOUS_MARGIN_THRESHOLD = 0.15
+UNCERTAIN_BORDER_COLOR = "#F1C40F"
 CATEGORY_LABEL_OPTIONS = {
     category_info["label"]: category_name
     for category_name, category_info in GARBAGE_INFO.items()
+}
+FEEDBACK_LABEL_OPTIONS = {
+    category_label: category_name
+    for category_name, category_label in FEEDBACK_CATEGORY_LABELS.items()
 }
 CATEGORY_NAME_TO_LABEL = {
     category_name: category_info["label"]
     for category_name, category_info in GARBAGE_INFO.items()
 }
+CATEGORY_NAME_TO_LABEL.update(FEEDBACK_CATEGORY_LABELS)
 
 
 @st.cache_resource
@@ -63,7 +88,7 @@ def load_trained_model(model_modified_time: float):
 def create_processed_image(image: Image.Image, category: str) -> Image.Image:
     """根据预测类别给图片添加彩色边框。"""
 
-    border_color = GARBAGE_INFO[category]["color"]
+    border_color = GARBAGE_INFO.get(category, {}).get("color", UNCERTAIN_BORDER_COLOR)
     return ImageOps.expand(image, border=12, fill=border_color)
 
 
@@ -81,6 +106,40 @@ def show_probability_bars(probabilities: dict[str, float]) -> None:
         st.progress(probability)
 
 
+def get_prediction_decision(probabilities: dict[str, float]) -> dict:
+    """根据概率判断是否应该拒识，而不是强行输出垃圾类别。"""
+
+    sorted_probabilities = sorted(
+        probabilities.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    top_category, top_confidence = sorted_probabilities[0]
+    second_confidence = (
+        sorted_probabilities[1][1] if len(sorted_probabilities) > 1 else 0.0
+    )
+    margin = top_confidence - second_confidence
+    reject_reasons: list[str] = []
+
+    if top_confidence < LOW_CONFIDENCE_THRESHOLD:
+        reject_reasons.append(
+            f"最高置信度低于 {LOW_CONFIDENCE_THRESHOLD:.0%}"
+        )
+
+    if margin < AMBIGUOUS_MARGIN_THRESHOLD:
+        reject_reasons.append(
+            f"第一名和第二名概率差距小于 {AMBIGUOUS_MARGIN_THRESHOLD:.0%}"
+        )
+
+    return {
+        "category": top_category,
+        "confidence": top_confidence,
+        "margin": margin,
+        "should_reject": bool(reject_reasons),
+        "reject_reasons": reject_reasons,
+    }
+
+
 def show_feedback_form(
     image: Image.Image,
     file_name: str,
@@ -88,46 +147,60 @@ def show_feedback_form(
     confidence: float,
     probabilities: dict[str, float],
     form_key: str,
+    default_feedback_category: str | None = None,
 ) -> None:
     """显示纠错反馈表单，并把反馈保存到待审核目录。"""
 
-    with st.expander("识别错了？提交纠错反馈"):
+    with st.expander("识别错了或不是垃圾？提交反馈"):
         st.write(
             "反馈会先保存到待审核目录，不会直接进入训练集。"
-            "人工审核通过后，下一次训练才会使用这些图片。"
+            "四类垃圾图片审核通过后才会用于训练；"
+            "不是垃圾和图片模糊反馈只用于记录问题样本。"
+        )
+        st.caption(
+            "当前允许反馈类别："
+            + "、".join(FEEDBACK_CATEGORY_LABELS.values())
         )
 
-        option_labels = list(CATEGORY_LABEL_OPTIONS.keys())
-        predicted_label = GARBAGE_INFO[predicted_category]["label"]
-        default_index = option_labels.index(predicted_label)
+        option_labels = list(FEEDBACK_LABEL_OPTIONS.keys())
+        fallback_category = default_feedback_category or predicted_category
+        fallback_label = CATEGORY_NAME_TO_LABEL.get(
+            fallback_category,
+            CATEGORY_NAME_TO_LABEL[predicted_category],
+        )
+        default_index = (
+            option_labels.index(fallback_label)
+            if fallback_label in option_labels
+            else 0
+        )
 
         with st.form(f"{form_key}_feedback_form"):
             selected_label = st.selectbox(
-                "请选择你认为正确的类别",
+                "请选择你认为正确的情况",
                 option_labels,
                 index=default_index,
                 key=f"{form_key}_corrected_category",
             )
             note = st.text_input(
                 "备注（可选）",
-                placeholder="例如：这是透明塑料瓶，不是其他垃圾",
+                placeholder="例如：这不是垃圾，或者这张图太模糊",
                 key=f"{form_key}_feedback_note",
             )
             confirmed = st.checkbox(
-                "我确认这张图片真实属于所选类别",
+                "我确认这条反馈是真实的",
                 key=f"{form_key}_feedback_confirmed",
             )
-            submitted = st.form_submit_button("提交纠错反馈")
+            submitted = st.form_submit_button("提交反馈")
 
         if not submitted:
             return
 
-        corrected_category = CATEGORY_LABEL_OPTIONS[selected_label]
+        corrected_category = FEEDBACK_LABEL_OPTIONS[selected_label]
         if not confirmed:
             st.warning("请先勾选确认框，避免误操作把错误标签提交给系统。")
             return
 
-        if corrected_category == predicted_category:
+        if corrected_category == predicted_category and default_feedback_category is None:
             st.info("你选择的类别与模型预测一致，因此没有保存为纠错样本。")
             return
 
@@ -230,7 +303,7 @@ def show_feedback_review_page() -> None:
         "审核建议：图片清楚、类别确定才点通过；看不清或类别不确定就拒绝。"
     )
 
-    option_labels = list(CATEGORY_LABEL_OPTIONS.keys())
+    option_labels = list(FEEDBACK_LABEL_OPTIONS.keys())
     for image_index, image_path in enumerate(pending_images, start=1):
         metadata = load_feedback_metadata(image_path)
         predicted_category = metadata.get("predicted_category")
@@ -281,7 +354,7 @@ def show_feedback_review_page() -> None:
                     index=default_index,
                     key=f"review_category_{image_path.stem}",
                 )
-                final_category = CATEGORY_LABEL_OPTIONS[final_label]
+                final_category = FEEDBACK_LABEL_OPTIONS[final_label]
 
                 approve_column, reject_column = st.columns(2)
                 with approve_column:
@@ -323,10 +396,13 @@ def show_prediction_result(
     """显示一张图片的原图、预测结果、概率和处理后图片。"""
 
     probabilities = predict_probabilities(image, model, class_names, device)
-    category = max(probabilities, key=probabilities.get)
-    confidence = probabilities[category]
+    decision = get_prediction_decision(probabilities)
+    category = decision["category"]
+    confidence = decision["confidence"]
+    should_reject = decision["should_reject"]
     category_info = GARBAGE_INFO[category]
-    processed_image = create_processed_image(image, category)
+    border_category = "uncertain" if should_reject else category
+    processed_image = create_processed_image(image, border_category)
 
     st.subheader(f"图片：{file_name}")
     image_column, result_column = st.columns([1, 1])
@@ -335,21 +411,39 @@ def show_prediction_result(
         st.image(image, caption="用户上传的原始图片", width="stretch")
         st.image(
             processed_image,
-            caption=f"处理后图片：{category_info['label']}",
+            caption=(
+                "处理后图片：模型无法确定"
+                if should_reject
+                else f"处理后图片：{category_info['label']}"
+            ),
             width="stretch",
         )
 
     with result_column:
         category_column, confidence_column = st.columns(2)
         with category_column:
-            st.metric("预测类别", category_info["label"])
+            if should_reject:
+                st.metric("识别结果", "无法确定")
+            else:
+                st.metric("预测类别", category_info["label"])
         with confidence_column:
-            st.metric("模型置信度", f"{confidence:.2%}")
+            st.metric("最高置信度", f"{confidence:.2%}")
 
-        if confidence < LOW_CONFIDENCE_THRESHOLD:
-            st.warning("模型置信度较低，建议人工确认后再投放。")
+        if should_reject:
+            st.warning(
+                "系统无法确认这张图片是否适合垃圾分类，"
+                "因此不会强行给出投放类别。"
+            )
+            st.info(
+                "建议：请确认拍摄对象确实是待投放垃圾，"
+                "并尽量让单个物品占据画面中央、背景简单、光线充足。"
+            )
+            st.caption("拒识原因：" + "；".join(decision["reject_reasons"]))
+            default_feedback_category = "not_garbage"
+        else:
+            st.success(f"投放建议：{category_info['advice']}")
+            default_feedback_category = None
 
-        st.success(f"投放建议：{category_info['advice']}")
         show_probability_bars(probabilities)
         show_feedback_form(
             image=image,
@@ -358,6 +452,7 @@ def show_prediction_result(
             confidence=confidence,
             probabilities=probabilities,
             form_key=f"image_{file_index}",
+            default_feedback_category=default_feedback_category,
         )
 
 
@@ -430,6 +525,10 @@ def show_prediction_page() -> None:
         st.write(
             "网页中的纠错反馈会先进入待审核目录；只有运行 review_feedback.py "
             "审核通过的图片，才会加入下一次训练。"
+        )
+        st.write(
+            "当最高置信度低于 60%，或前两类概率差距小于 15% 时，"
+            "系统会显示无法确定，避免把明显不合适的图片强行分成某类垃圾。"
         )
         st.write(f"本次预测使用设备：{device}")
 

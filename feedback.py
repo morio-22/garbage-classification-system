@@ -18,13 +18,53 @@ PENDING_FEEDBACK_DIR = FEEDBACK_DIR / "pending"
 APPROVED_FEEDBACK_DIR = FEEDBACK_DIR / "approved"
 REJECTED_FEEDBACK_DIR = FEEDBACK_DIR / "rejected"
 
-# 用户反馈仍然只允许进入这四个最终类别。
-CATEGORY_NAMES = (
+# 这四类是模型真正参与训练的垃圾类别。
+TRAINING_CATEGORY_NAMES = (
     "recyclable",
     "kitchen_waste",
     "hazardous_waste",
     "other_waste",
 )
+
+# 这两类只用于收集特殊反馈，默认不进入四分类训练集。
+SPECIAL_FEEDBACK_CATEGORY_NAMES = (
+    "not_garbage",
+    "unclear_image",
+)
+
+# 审核系统允许保存四类垃圾反馈，也允许保存“不是垃圾”和“图片不清楚”。
+CATEGORY_NAMES = TRAINING_CATEGORY_NAMES + SPECIAL_FEEDBACK_CATEGORY_NAMES
+
+# 所有反馈类别的页面显示名称。训练类别和特殊类别统一在这里维护，
+# 避免 app 页面、审核页面和保存函数各写一份导致不同步。
+FEEDBACK_CATEGORY_LABELS = {
+    "recyclable": "可回收物",
+    "kitchen_waste": "厨余垃圾",
+    "hazardous_waste": "有害垃圾",
+    "other_waste": "其他垃圾",
+    "not_garbage": "不是垃圾 / 不适合分类",
+    "unclear_image": "图片太模糊 / 主体不清楚",
+}
+
+# 既接受内部类别代码，也接受页面上的中文标签。
+FEEDBACK_CATEGORY_ALIASES = {
+    **{category_name: category_name for category_name in CATEGORY_NAMES},
+    **{
+        category_label: category_name
+        for category_name, category_label in FEEDBACK_CATEGORY_LABELS.items()
+    },
+}
+
+
+def normalize_feedback_category(category: str) -> str:
+    """把页面显示名称或内部类别代码统一转换成内部类别代码。"""
+
+    normalized_category = FEEDBACK_CATEGORY_ALIASES.get(category.strip())
+    if normalized_category is None:
+        allowed_labels = "、".join(FEEDBACK_CATEGORY_LABELS.values())
+        raise ValueError(f"未知反馈类别：{category}。允许类别：{allowed_labels}")
+
+    return normalized_category
 
 
 def ensure_feedback_directories() -> None:
@@ -103,8 +143,7 @@ def save_pending_feedback(
 ) -> Path:
     """把用户纠错保存到待审核区，不直接加入训练集。"""
 
-    if corrected_category not in CATEGORY_NAMES:
-        raise ValueError(f"未知反馈类别：{corrected_category}")
+    corrected_category = normalize_feedback_category(corrected_category)
 
     ensure_feedback_directories()
     timestamp = get_utc_timestamp()
@@ -129,7 +168,10 @@ def save_pending_feedback(
         },
         "corrected_category": corrected_category,
         "note": note.strip(),
-        "review_tip": "只有人工审核通过后，这张图片才会进入下一次训练。",
+        "review_tip": (
+            "只有人工审核通过后，四类垃圾图片才会进入下一次训练；"
+            "not_garbage 和 unclear_image 只用于记录问题样本。"
+        ),
     }
     save_json(image_path.with_suffix(".json"), metadata)
     return image_path
@@ -169,9 +211,7 @@ def move_feedback_image(
 
     source_image_path = ensure_pending_image_path(image_path)
     source_category = source_image_path.parent.name
-    final_category = target_category or source_category
-    if final_category not in CATEGORY_NAMES:
-        raise ValueError(f"未知目标类别：{final_category}")
+    final_category = normalize_feedback_category(target_category or source_category)
 
     ensure_feedback_directories()
     metadata = load_feedback_metadata(source_image_path)
