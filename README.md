@@ -33,9 +33,15 @@
 ├── prepare_dataset.py             # 自动下载补充图片并生成四分类目录
 ├── feedback.py                    # 保存和移动用户纠错反馈
 ├── review_feedback.py             # 命令行审核用户纠错反馈
+├── run_app.py                     # 桌面版启动器，打包后自动打开浏览器
+├── build_exe.bat                  # 生成可双击运行的程序文件夹
+├── build_installer.bat            # 生成 Windows 安装包
+├── installer/
+│   └── setup.iss                  # Inno Setup 安装脚本
 ├── train.py                       # 一键准备数据并训练 ResNet18
 ├── predict.py                     # 单张图片预测脚本
 ├── requirements.txt               # Python 依赖列表
+├── requirements-desktop.txt       # 桌面安装版依赖列表
 ├── dataset/
 │   ├── README.md                  # 数据集目录和映射说明
 │   ├── user_feedback/             # 本地用户纠错反馈，不上传 GitHub
@@ -114,6 +120,73 @@ models/garbage_resnet18.pth
 ```powershell
 python -m streamlit run app.py
 ```
+
+## 制作桌面安装包
+
+项目支持打包成 Windows 安装包，并且安装包可以自带训练好的模型。普通用户安装后不需要安装 Python，也不需要单独下载模型。
+
+如果只想使用软件，可以直接在 GitHub Release 中下载安装包：
+
+```text
+GarbageClassificationSystem_Setup.exe
+```
+
+下载后双击安装，即可从开始菜单打开 `Garbage Classification System`。
+
+桌面安装版只保留运行功能：
+
+- 图片识别
+- 用户反馈
+- 管理员反馈审核页面
+- 本地保存待审核、已通过、已拒绝的反馈图片
+
+桌面安装版不包含训练和数据集下载功能。重新下载数据集、重新训练模型、输出混淆矩阵等操作仍然在 GitHub 开发版中完成。这样可以减少安装包体积，也避免普通用户误操作训练模型。
+
+打包前请确认本机已经存在模型文件：
+
+```text
+models/garbage_resnet18.pth
+```
+
+第一步，生成可双击运行的程序文件夹：
+
+```powershell
+.\build_exe.ps1
+```
+
+这个脚本会使用 `requirements-desktop.txt`，只安装和打包桌面推理所需依赖。
+
+也可以直接双击 `build_exe.bat`，它会调用同一个 PowerShell 脚本。
+
+成功后会生成：
+
+```text
+dist/GarbageClassificationSystem/GarbageClassificationSystem.exe
+```
+
+请先双击这个 exe 测试，确认能自动打开网页。
+
+第二步，安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)，然后生成安装包：
+
+```powershell
+.\build_installer.ps1
+```
+
+也可以直接双击 `build_installer.bat`。
+
+成功后会生成：
+
+```text
+installer/Output/GarbageClassificationSystem_Setup.exe
+```
+
+这个安装包会包含：
+
+- 桌面版启动程序
+- Streamlit、PyTorch、torchvision 等运行依赖
+- `models/garbage_resnet18.pth` 模型文件
+
+因此普通用户只需要下载安装包、双击安装、再从桌面快捷方式打开即可。
 
 ## 常用训练参数
 
