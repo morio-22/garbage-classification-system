@@ -2,8 +2,14 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-desktop-build/
 work/
 outputs/
+*.log
+build/
+dist/
+installer/Output/
+*.spec
 
 # TrashNet 自动下载、解压和划分后的数据
 dataset/trashnet_raw/

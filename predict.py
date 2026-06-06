@@ -8,12 +8,17 @@ from PIL import Image
 from torch import nn
 from torchvision.models import ResNet18_Weights, resnet18
 
-from prepare_dataset import FOUR_CLASS_NAMES
-
-
 # 项目根目录。使用绝对路径后，从其他目录运行脚本也不会找错模型文件。
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_PATH = PROJECT_DIR / "models" / "garbage_resnet18.pth"
+
+# 桌面版只需要推理，不需要导入 prepare_dataset.py 中的下载和划分数据逻辑。
+FOUR_CLASS_NAMES = (
+    "recyclable",
+    "kitchen_waste",
+    "hazardous_waste",
+    "other_waste",
+)
 
 
 def get_device() -> torch.device:
